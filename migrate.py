@@ -4,43 +4,45 @@ import re
 import subprocess
 import time
 
-filename = 'your-space-2024-03-01.txt'
-repo_name = 'MannanM/assembla-to-github'
-timezone = timedelta(hours=10)
-time_format = '%d/%m/%Y %H:%M:%S'
-users = {
+DRY_RUN = True
+FILE_NAME = 'your-space-2024-03-01.txt'
+REPO_NAME = 'MannanM/assembla-to-github'
+TIME_ZONE = timedelta(hours=10)
+TIME_FORMAT = '%d/%m/%Y %H:%M:%S'
+USERS = {
     'null': 'Unassigned',
     'user1': 'Mannan',
     'user2': 'Tony'
 }
-github_users = {
+GITHUB_USERS = {
     'user1': 'MannanM',
 }
-closed_ticket_status = {
+CLOSED_TICKET_STATUS = {
     'Invalid': 'not planned',
 }
-priority = {
+PRIORITY = {
     '1': 'Highest',
     '2': 'High',
     '3': 'Medium',
     '4': 'Low',
     '5': 'Lowest',
 }
-substring_counts = {}
-milestones = {}
-labels = {}
-ticket_status = {}
-tickets = {}
+SUBSTRING_COUNTS = {}
+MILESTONES = {}
+LABELS = {}
+TICKET_STATUS = {}
+TICKETS = {}
+RATE_LIMIT = 1
 
 
 class Milestone:
     def __init__(self, name, due_date, user_id, description, is_completed, completed_date):
         self.name = name
         if due_date == 'null':
-            self.dueDate = None
+            self.due_date = None
         else:
-            self.dueDate = due_date + 'T00:00:00Z'
-        self.description = 'Created By ' + users[user_id] + '\n' + description
+            self.due_date = due_date + 'T00:00:00Z'
+        self.description = 'Created By ' + USERS[user_id] + '\n' + description
         if is_completed == '0':
             self.state = 'open'
         else:
@@ -48,14 +50,15 @@ class Milestone:
             self.description = self.description + '\n' + 'Completed on ' + completed_date
 
     def __str__(self):
-        return f'Milestone(name={self.name}, dueDate={self.dueDate}, description={self.description}, state={self.state})'
+        return (f'Milestone(name={self.name}, dueDate={self.due_date}, state={self.state}, '
+                f'description={self.description})')
 
     def to_command_array(self, reponame):
         state_ = ['gh', 'api', f'repos/{reponame}/milestones', '-X', 'POST',
                   '-f', f'title={self.name}', '-f', f'description={self.description}']
-        if self.dueDate is not None:
+        if self.due_date is not None:
             state_.append('-f')
-            state_.append(f'due_on={self.dueDate}')
+            state_.append(f'due_on={self.due_date}')
         return state_
 
     def to_close_command_array(self, reponame, milestone_id):
@@ -68,16 +71,11 @@ class Label:
         self.ticket_id = ticket_id
 
     def __str__(self):
-        return f'Milestone(name={self.name})'
+        return f'Label(name={self.name})'
 
     def __eq__(self, other):
         is_label = isinstance(other, self.__class__)
-        if not is_label:
-            return False
-        if self.name == other.name:
-            return True
-        else:
-            return False
+        return is_label and self.name == other.name
 
     def __hash__(self):
         return hash(self.name)
@@ -90,12 +88,12 @@ class Status:
     def __init__(self, name, state):
         self.name = name
         self.open = state == '1'
-        self.reason = closed_ticket_status.get(name, 'completed')
+        self.reason = CLOSED_TICKET_STATUS.get(name, 'completed')
 
 
 def filter_string(unfiltered_string):
     pre_ = (unfiltered_string
-            .replace('​', '')
+            .replace('\u200B', '')
             .replace('\\u0026', '&')
             .replace('\\u003c', "<")
             .replace('\\u003e', ">")
@@ -116,7 +114,7 @@ def filter_string(unfiltered_string):
     replacement = r'[\2](\1)'
     pre_ = re.sub(pattern, replacement, pre_)
     pattern = r"https://(app|www)\.assembla\.com/spaces/.*/tickets/(\d+)[a-zA-Z0-9-/]*"
-    replacement = fr"https://github.com/{repo_name}/issues/\2"
+    replacement = fr"https://github.com/{REPO_NAME}/issues/\2"
     pre_ = re.sub(pattern, replacement, pre_)
     pattern = r"\[\[image:.*\|(.*?)\]\]"
     replacement = r"image: `\1`"
@@ -132,26 +130,26 @@ def filter_string(unfiltered_string):
 
 class Tickets:
 
-    def __init__(self, id, name, description, priority, created_on, created_by, updated_on, status, assigned_to,
+    def __init__(self, ticket_id, name, description, priority, created_on, created_by, updated_on, status, assigned_to,
                  worked_hours, milestone):
-        self.id = int(id)
+        self.id = int(ticket_id)
         self.name = filter_string(name)
         self.description = filter_string(description)
         self.labels = []
         self.comments = []
         self.priority = priority
-        self.created_on = datetime.fromisoformat(created_on) + timezone
-        self.updated_on = datetime.fromisoformat(updated_on) + timezone
-        self.created_by = users[created_by]
+        self.created_on = datetime.fromisoformat(created_on) + TIME_ZONE
+        self.updated_on = datetime.fromisoformat(updated_on) + TIME_ZONE
+        self.created_by = USERS[created_by]
         # This is a bit ugly because it relies on tickets being after ticket_statuses
-        self.status = ticket_status[status]
-        self.assigned_to = users[assigned_to]
+        self.status = TICKET_STATUS[status]
+        self.assigned_to = USERS[assigned_to]
         if milestone == 'null':
             self.milestone = None
         else:
-            self.milestone = milestones[milestone]
-        if assigned_to in github_users:
-            self.github_assigned_to = github_users[assigned_to]
+            self.milestone = MILESTONES[milestone]
+        if assigned_to in GITHUB_USERS:
+            self.github_assigned_to = GITHUB_USERS[assigned_to]
         else:
             self.github_assigned_to = None
         self.worked_hours = worked_hours
@@ -187,15 +185,19 @@ class Tickets:
                 milestone_row +
                 '| Assigned To | ' + self.assigned_to + ' |\n'
                 '| Created By | ' + self.created_by + ' |\n'
-                '| Created | ' + self.created_on.strftime(time_format) + ' |\n'
-                '| Last Updated | ' + self.updated_on.strftime(time_format) + ' |\n'
-                '| Priority | ' + priority[self.priority] + ' |\n' +
+                '| Created | ' + self.created_on.strftime(TIME_FORMAT) + ' |\n'
+                '| Last Updated | ' + self.updated_on.strftime(TIME_FORMAT) + ' |\n'
+                '| Priority | ' +
+                PRIORITY[self.priority] + ' |\n' +
                 labels_row + hours_worked_row + '\n\n' + self.description + '\n\n' +
                 comments_row)
 
     def to_command_array(self, reponame):
+        # If you are running on windows and have very large tickets, you may need to add [0:20000] to the ticket_body
+        # This will only load the first 20,000 characters in, but will allow the command to run
+        ticket_body = self.to_markdown_string(False)
         state_ = ['gh', 'issue', 'create', '--title', self.name,
-                  '--body', self.to_markdown_string(False), '--repo', reponame]
+                  '--body', ticket_body, '--repo', reponame]
         for label in self.labels:
             state_.append('--label')
             state_.append(label)
@@ -208,8 +210,9 @@ class Tickets:
         return state_
 
     def to_update_command_array(self, reponame):
-        state_ = ['gh', 'issue', 'edit', str(matching_ticket.id), '--title', self.name,
-                  '--body', self.to_markdown_string(False), '--repo', reponame]
+        ticket_body = self.to_markdown_string(False)
+        state_ = ['gh', 'issue', 'edit', str(MATCHING_TICKET.id), '--title', self.name,
+                  '--body', ticket_body, '--repo', reponame]
         for label in self.labels:
             state_.append('--add-label')
             state_.append(label)
@@ -222,18 +225,18 @@ class Tickets:
         return state_
 
     def to_close_command_array(self, reponame):
-        return ['gh', 'issue', 'close', str(matching_ticket.id), '--repo', reponame, '--reason', self.status.reason]
+        return ['gh', 'issue', 'close', str(MATCHING_TICKET.id), '--repo', reponame, '--reason', self.status.reason]
 
 
 class TicketComment:
 
     def __init__(self, description, created_on, created_by):
         self.description = filter_string(description)
-        self.created_on = datetime.fromisoformat(created_on) + timezone
-        self.created_by = users[created_by]
+        self.created_on = datetime.fromisoformat(created_on) + TIME_ZONE
+        self.created_by = USERS[created_by]
 
     def __str__(self):
-        return f'> Comment by {self.created_by} at {self.created_on.strftime(time_format)}\n\n{self.description}'
+        return f'> Comment by {self.created_by} at {self.created_on.strftime(TIME_FORMAT)}\n\n{self.description}'
 
 
 def read_csv(string_line, name):
@@ -241,97 +244,99 @@ def read_csv(string_line, name):
     return csv.reader([csv_line], escapechar='╣')
 
 
-with open(filename, 'r', encoding='utf-8') as file:
+def execute(command_array, orig_count):
+    if DRY_RUN:
+        return orig_count
+    try:
+        result = subprocess.run(command_array, capture_output=True, text=True, check=True)
+        if len(result.stdout) > 0:
+            print(f'{result.stdout.strip()}')
+    except subprocess.CalledProcessError as e:
+        if e.stderr.find('was submitted too quickly') != -1:
+            input('Rate limit exceeded. Wait some time and hit enter.')
+            return execute(command_array, orig_count)
+        raise SystemExit(f'Return Code: {e.returncode} {e.stderr}') from e
+    if orig_count % 9 == 0:
+        time.sleep(60)
+    return orig_count + 1
+
+
+with open(FILE_NAME, 'r', encoding='utf-8') as file:
     for line in file:
         split = line.split(',')
         typeOfEntity = split[0]
         if not typeOfEntity.endswith(':fields'):
-            if typeOfEntity in substring_counts:
-                substring_counts[typeOfEntity] += 1
+            if typeOfEntity in SUBSTRING_COUNTS:
+                SUBSTRING_COUNTS[typeOfEntity] += 1
             else:
-                substring_counts[typeOfEntity] = 1
+                SUBSTRING_COUNTS[typeOfEntity] = 1
             if typeOfEntity.startswith('milestones'):
                 for row in read_csv(line, 'milestones'):
-                    milestones[row[0]] = Milestone(row[2], row[1], row[5], row[7], row[8], row[9])
+                    MILESTONES[row[0]] = Milestone(row[2], row[1], row[5], row[7], row[8], row[9])
             elif typeOfEntity.startswith('workflow_property_vals'):
                 for row in read_csv(line, 'workflow_property_vals'):
-                    labels[row[0]] = Label(row[4], row[1])
+                    LABELS[row[0]] = Label(row[4], row[1])
             elif typeOfEntity.startswith('ticket_statuses'):
                 for row in read_csv(line, 'ticket_statuses'):
-                    ticket_status[row[0]] = Status(row[2], row[3])
+                    TICKET_STATUS[row[0]] = Status(row[2], row[3])
             elif typeOfEntity.startswith('tickets'):
                 for row in read_csv(line, 'tickets'):
-                    tickets[row[0]] = Tickets(
+                    TICKETS[row[0]] = Tickets(
                         row[1], row[5], row[7], row[6], row[8], row[2], row[9],
                         row[19], row[3], row[23], row[10]
                     )
             elif typeOfEntity.startswith('ticket_comments'):
                 for row in read_csv(line, 'ticket_comments'):
                     if row[5] != '' and row[5] != 'null':
-                        tickets[row[1]].add_comment(TicketComment(row[5], row[4], row[2]))
+                        TICKETS[row[1]].add_comment(TicketComment(row[5], row[4], row[2]))
 
-for key, value in substring_counts.items():
+for key, value in SUBSTRING_COUNTS.items():
     print(f'{key}: {value}')
 
-
-def execute(command_array, orig_count):
-    result = subprocess.run(command_array, capture_output=True, text=True)
-    if len(result.stdout) > 0:
-        print(f'{result.stdout}')
-    if result.returncode != 0:
-        print(f'{result.returncode} {result.stderr}')
-        exit(1)
-    if orig_count % 9 == 0:
-        time.sleep(60)
-    return orig_count + 1
-
-
-count = 1
-for key, value in milestones.items():
+for key, value in MILESTONES.items():
     print(f'Creating: {value}')
-    count = execute(value.to_command_array(repo_name), count)
+    RATE_LIMIT = execute(value.to_command_array(REPO_NAME), RATE_LIMIT)
 
-distinct_lables = set(value for value in labels.values())
-for value in distinct_lables:
+distinct_labels = set(value for value in LABELS.values())
+for value in distinct_labels:
     print(f'Creating: {value}')
-    count = execute(value.to_command_array(repo_name), count)
+    RATE_LIMIT = execute(value.to_command_array(REPO_NAME), RATE_LIMIT)
 
-for key, value in labels.items():
-    tickets[value.ticket_id].add_label(value.name)
+for key, value in LABELS.items():
+    TICKETS[value.ticket_id].add_label(value.name)
 
-last_ticket = list(tickets.values())[-1]
+last_ticket = list(TICKETS.values())[-1]
 for ticket_num in range(1, last_ticket.id + 1):
-    matching_ticket = None
-    for ticket in tickets.values():
+    MATCHING_TICKET = None
+    for ticket in TICKETS.values():
         if ticket.id == ticket_num:
-            matching_ticket = ticket
+            MATCHING_TICKET = ticket
             break
-    if matching_ticket:
+    if MATCHING_TICKET:
         # this will create a .md file of the tickets in the Tickets folder
         # helpful for debugging or if you want an offline copy
-        f = open(f'./Tickets/{str(matching_ticket.id).zfill(4)}.md', 'w', encoding='utf-8')
-        f.write(matching_ticket.to_markdown_string())
-        f.close()
+        with open(f'./Tickets/{str(MATCHING_TICKET.id).zfill(4)}.md', 'w', encoding='utf-8') as f:
+            f.write(MATCHING_TICKET.to_markdown_string())
         # If you need to update, you can use the line below instead of the normal to_command_array
-        # You will need to comment out the paceholder creation line below as well
+        # You will need to comment out the placeholder creation line below as well
         # count = execute(matching_ticket.to_update_command_array(repoName), count)
-        count = execute(matching_ticket.to_command_array(repo_name), count)
-        if not matching_ticket.status.open:
-            print(" - Closing ticket: " + str(matching_ticket.id))
-            count = execute(matching_ticket.to_close_command_array(repo_name), count)
+        RATE_LIMIT = execute(MATCHING_TICKET.to_command_array(REPO_NAME), RATE_LIMIT)
+        if not MATCHING_TICKET.status.open:
+            print(" - Closing ticket: " + str(MATCHING_TICKET.id))
+            RATE_LIMIT = execute(MATCHING_TICKET.to_close_command_array(REPO_NAME), RATE_LIMIT)
     else:
         # This is to keep the numbers consistent with Assembla
         # E.g. if you create an issue with ID 1000, then the next issue will be 1001
         print('No ticket found with the given ID = ' + str(ticket_num))
-        count = execute(['gh', 'issue', 'create', '--title', 'Placeholder', '--body',
-                         'Placeholder', '--repo', repo_name], count)
-        count = execute(['gh', 'issue', 'close', ticket_num, '--repo', repo_name,
-                         '--reason', 'not planned'], count)
+        RATE_LIMIT = execute(['gh', 'issue', 'create', '--title', 'Placeholder', '--body',
+                              'Placeholder', '--repo', REPO_NAME], RATE_LIMIT)
+        RATE_LIMIT = execute(['gh', 'issue', 'close', str(ticket_num), '--repo', REPO_NAME,
+                              '--reason', 'not planned'], RATE_LIMIT)
 
 # Close milestones
-for index, (key, value) in enumerate(milestones.items()):
+for index, (key, value) in enumerate(MILESTONES.items()):
     # If you already have milestones created in the repo, you can change + 1 to highest milestone # +1
     milestone_index = index + 1
     if value.state == 'closed' and milestone_index != 'Unknown':
-        print(f'Closing milestone id: {milestone_index} for {value.name}')
-        count = execute(value.to_close_command_array(repo_name, milestone_index), count)
+        print(f'Closing milestone id: {milestone_index} for {value}')
+        RATE_LIMIT = execute(value.to_close_command_array(REPO_NAME, milestone_index), RATE_LIMIT)
